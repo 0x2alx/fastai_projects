@@ -3,6 +3,8 @@ from torch import tensor
 from fastai.data.transforms import RandomSplitter
 import torch.nn.functional as F
 
+#Based on https://www.kaggle.com/code/jhoward/linear-model-and-neural-net-from-scratch
+
 torch.manual_seed(42)
 
 #Load csv training set in pd df
