@@ -2,6 +2,9 @@ from fastai.imports import *
 import os, zipfile, kaggle
 from numpy import random
 from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import mean_absolute_error
+from sklearn.ensemble import RandomForestClassifier
 
 path=Path('./titanic')
 df = pd.read_csv(path/'train.csv')
@@ -50,4 +53,41 @@ def score(col, y, split):
     lhs = col<=split
     return (_side_score(lhs,y) + _side_score(~lhs,y))/len(y)
 
-print(f"\n{score(trn_xs['Sex'], trn_y, 0.5)=}")
+def min_col(df, nm):
+    col,y = df[nm],df[dep]
+    unq = col.dropna().unique()
+    scores = np.array([score(col, y, o) for o in unq if not np.isnan(o)])
+    idx = scores.argmin()
+    return unq[idx],scores[idx]
+
+cols = cats+conts
+print(f"\n\nBest splits (based on scores) per feature:\n")
+dictt = {o:min_col(trn_df, o) for o in cols}
+
+#For each feature, print the best spliting value, as well as the score according to that split
+for key in dictt:
+    print(f"{key}: ({dictt[key][0]:.3f}, {dictt[key][1]:.3f})")
+
+#Function to create a single decision tree
+def get_tree(prop=0.75):
+    n = len(trn_y)
+    idxs = random.choice(n, int(n*prop))
+    return DecisionTreeClassifier(min_samples_leaf=5).fit(trn_xs.iloc[idxs], trn_y.iloc[idxs])
+
+#Create a MANUAL RandomForest (ensemble of 100 trees)
+trees = [get_tree() for t in range(100)]
+
+#Calculate all probabilities and their average
+all_probs = [t.predict(val_xs) for t in trees]
+avg_probs = np.stack(all_probs).mean(0)
+
+print(f"\n\nMAE for manual RandomForests: {mean_absolute_error(val_y, avg_probs):.2f}")
+
+#Create an RF from sklearn
+rf = RandomForestClassifier(100, min_samples_leaf=5)
+rf.fit(trn_xs, trn_y);
+print(f"\nMAE for SKLEARN RandomForests: {mean_absolute_error(val_y, rf.predict(val_xs)):.2f}")
+
+print(f"\n\nFeature importance:")
+for name, importance in zip(trn_xs.columns, rf.feature_importances_):
+    print(f"{name}: {importance:.4f}")
