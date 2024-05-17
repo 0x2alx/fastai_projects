@@ -9,72 +9,66 @@ import warnings, os
 
 warnings.filterwarnings('ignore')
 
-tab_pandas = None
+#Load training and validation data into PD DF
+df = pd.read_csv('./data/TrainAndValid.csv', low_memory=False)
+df_test = pd.read_csv('./data/Test.csv', low_memory=False)
 
-dep_var = 'SalePrice'
+print(f"\n\n>>df.columns: \n{df.columns}")
+print(f"\n>>dr.describe(): \n{df.describe()}")
+
+#Pre-processing data
+
+print(f"\n\n>>Product size levels: df['ProductSize'].unique()\n{df['ProductSize'].unique()=}")
+
 sizes = 'Large','Large / Medium','Medium','Small','Mini','Compact'
+print(f"\n>>Set ordered categories for ProductSize: sizes = \n{sizes}")
+dep_var = 'SalePrice'
+
+#Set ProductSize ordered cats
+df['ProductSize'] = df['ProductSize'].astype('category')
+df['ProductSize'] = df['ProductSize'].cat.set_categories(sizes, ordered=True)
+
+print(f"\n>>df['ProductSize'] = \n{df['ProductSize']}")
+
+#Normalize the SalePrice, the target label, to a log value, since it is a monetary value
+
+df[dep_var] = np.log(df[dep_var])
+
+print(f"\n\n>>Normalized/log the target label: df[dep_var] = \n{df[dep_var]}")
+
+
+#Add fast.ai date features
+df = add_datepart(df, 'saledate')
+df_test = add_datepart(df_test, 'saledate')
+
+new_cols = ', '.join(o for o in df.columns if o.startswith('sale'))
+print(f"\n\n>>Newly added date cols:\n{new_cols}")
+
+
+
+##Convert to TabularPandas to access fast transforms
+#Tabular pre-processing
+procs = [Categorify,FillMissing]
+
+#Split into training and validation
+cond = (df.saleYear<2011) | ((df.saleYear==2011) & (df.saleMonth<10))
+train_idx = np.where(cond)[0]
+valid_idx = np.where(~cond)[0]
+print(f"\n\n>>Train data set size: {len(train_idx)}")
+print(f">>Valid data set size: {len(valid_idx)}")
 splits = (list(train_idx),list(valid_idx))
-if os.path.exists("./tab_pandas.pkl"):
-    print(f"\n\n>>Found TabularPandas pickle file, loading...")
-    tab_pandas = load_pickle("./tab_pandas.pkl")
-else:
-    #Load training and validation data into PD DF
-    df = pd.read_csv('./data/TrainAndValid.csv', low_memory=False)
-    df_test = pd.read_csv('./data/Test.csv', low_memory=False)
 
-    print(f"\n\n>>df.columns: \n{df.columns}")
-    print(f"\n>>dr.describe(): \n{df.describe()}")
+#Define continuous and categorical variables
+cont, cat = cont_cat_split(df, 1, dep_var=dep_var)
+print(f"\n\n>>Continuous columns:\n{cont}")
+print(f"\n>>Categorical columns:\n{cat}")
 
-    #Pre-processing data
+#Create the TabularPandas object
+tab_pandas = TabularPandas(df, procs=procs, cat_names=cat, cont_names=cont, y_names=dep_var, splits=splits)
+print(f"\n\n>>{len(tab_pandas.train)=}")
+print(f">>{len(tab_pandas.valid)=}")
 
-    print(f"\n\n>>Product size levels: df['ProductSize'].unique()\n{df['ProductSize'].unique()=}")
-
-    print(f"\n>>Set ordered categories for ProductSize: sizes = \n{sizes}")
-
-    #Set ProductSize ordered cats
-    df['ProductSize'] = df['ProductSize'].astype('category')
-    df['ProductSize'] = df['ProductSize'].cat.set_categories(sizes, ordered=True)
-
-    print(f"\n>>df['ProductSize'] = \n{df['ProductSize']}")
-
-    #Normalize the SalePrice, the target label, to a log value, since it is a monetary value
-
-    df[dep_var] = np.log(df[dep_var])
-
-    print(f"\n\n>>Normalized/log the target label: df[dep_var] = \n{df[dep_var]}")
-
-
-    #Add fast.ai date features
-    df = add_datepart(df, 'saledate')
-    df_test = add_datepart(df_test, 'saledate')
-
-    new_cols = ', '.join(o for o in df.columns if o.startswith('sale'))
-    print(f"\n\n>>Newly added date cols:\n{new_cols}")
-
-
-
-    ##Convert to TabularPandas to access fast transforms
-    #Tabular pre-processing
-    procs = [Categorify,FillMissing]
-
-    #Split into training and validation
-    cond = (df.saleYear<2011) | ((df.saleYear==2011) & (df.saleMonth<10))
-    train_idx = np.where(cond)[0]
-    valid_idx = np.where(~cond)[0]
-    print(f"\n\n>>Train data set size: {len(train_idx)}")
-    print(f">>Valid data set size: {len(valid_idx)}")
-
-    #Define continuous and categorical variables
-    cont, cat = cont_cat_split(df, 1, dep_var=dep_var)
-    print(f"\n\n>>Continuous columns:\n{cont}")
-    print(f"\n>>Categorical columns:\n{cat}")
-
-    #Create the TabularPandas object
-    tab_pandas = TabularPandas(df, procs=procs, cat_names=cat, cont_names=cont, y_names=dep_var, splits=splits)
-    print(f"\n\n>>{len(tab_pandas.train)=}")
-    print(f">>{len(tab_pandas.valid)=}")
-
-    save_pickle("./tab_pandas.pkl",tab_pandas)
+save_pickle("./tab_pandas.pkl",tab_pandas)
 
 #Get training and validation inputs and targets
 train_xs, train_y = tab_pandas.train.xs, tab_pandas.train.y
@@ -195,8 +189,16 @@ dls = tab_pandas_nn.dataloaders(1024)
 
 learn = tabular_learner(dls, y_range=(8,12), layers=[500,250], n_out=1, loss_func=F.mse_loss)
 
-print(f"\n\nLR finder:\n{learn.lr_find()}")
+print(f"\n\nLR finder:\n{learn.lr_find()}\n\n")
 learn.fit_one_cycle(5, 1e-2)
 
 preds,targs = learn.get_preds()
 print(f"\nLOSS: {r_mse(preds,targs)}")
+
+learn.save('neural_network_model')
+
+#Ensembling the RF and NN model predictions
+rf_preds = final_model.predict(valid_xs_final)
+end_preds = (to_np(preds.squeeze()) + rf_preds)/2
+
+print(f"\n\n>>Ensemble of RF and NN LOSS: {r_mse(end_preds,valid_y)}")
