@@ -4,6 +4,7 @@ from fastai.tabular.all import *
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.tree import DecisionTreeRegressor
 from IPython.display import Image, display_svg, SVG
+from itertools import chain
 import warnings, os
 
 warnings.filterwarnings('ignore')
@@ -79,6 +80,54 @@ else:
 train_xs, train_y = tab_pandas.train.xs, tab_pandas.train.y
 valid_xs, valid_y = tab_pandas.valid.xs, tab_pandas.valid.y
 
+#Replace all missing/wrong dates with defautl value
+train_xs.loc[train_xs['YearMade']<1900, 'YearMade'] = 1950
+valid_xs.loc[valid_xs['YearMade']<1900, 'YearMade'] = 1950
+
+#Create RMSE loss function
+def r_mse(pred,y):
+    return round(math.sqrt(((pred-y)**2).mean()), 6)
+def m_rmse(m, xs, y):
+    return r_mse(m.predict(xs),y)
 
 print(f"\n\n>>train_xs:{len(train_xs)}")
 print(f">>valid_xs:{len(valid_xs)}")
+
+#Create RandomForests function
+def rf(xs, y, n_trees=40, max_samples=200_000, max_features=0.5, min_sample_leaf=5, **kwargs):
+    return RandomForestRegressor(n_jobs=-1, n_estimators=n_trees, 
+            max_samples=max_samples, max_features=max_features, 
+            min_samples_leaf=min_sample_leaf, oob_score=True).fit(xs, y)
+
+#Create an RF tree
+rf_model = rf(train_xs, train_y)
+
+#Print training and validation set losses
+print(f"\n\n>>Training loss: {m_rmse(rf_model, train_xs, train_y)}")
+print(f">>Validation loss: {m_rmse(rf_model, valid_xs, valid_y)}")
+
+#Get validation set predictions
+preds = np.stack([t.predict(valid_xs) for t in rf_model.estimators_])
+print(f"\n\n>>Validation set predictions shape:\n{preds.shape}")
+
+#Print the validation set loss per number of trees in the RF
+print(f"\n\n>>RMSE per number of trees")
+print("\n".join([f"{i+1}: {r_mse(preds[:i+1].mean(0), valid_y):.4f}" for i in range(5)]))
+print("...")
+print("\n".join([f"{i+1}: {r_mse(preds[:i+1].mean(0), valid_y):.4f}" for i in range(35,40)]))
+
+#Define feature importance
+def rf_feat_importance(modell, df):
+    return pd.DataFrame({'cols':df.columns, 'importance':modell.feature_importances_}).sort_values('importance',ascending=False)
+
+feat_imps = rf_feat_importance(rf_model,train_xs)
+print(f"\n\n>>Feature importance:\n{feat_imps}")
+
+#Eliminate features with lower importance to simplify the model
+features_to_keep = feat_imps[feat_imps.importance>0.005].cols
+print(f"\nEliminating low importance features to simplify model...")
+print(f">>Keeping {len(features_to_keep)} out of {len(tab_pandas.items.columns)}")
+
+
+
+
