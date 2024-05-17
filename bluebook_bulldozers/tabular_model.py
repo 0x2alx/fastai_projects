@@ -11,6 +11,9 @@ warnings.filterwarnings('ignore')
 
 tab_pandas = None
 
+dep_var = 'SalePrice'
+sizes = 'Large','Large / Medium','Medium','Small','Mini','Compact'
+splits = (list(train_idx),list(valid_idx))
 if os.path.exists("./tab_pandas.pkl"):
     print(f"\n\n>>Found TabularPandas pickle file, loading...")
     tab_pandas = load_pickle("./tab_pandas.pkl")
@@ -26,7 +29,6 @@ else:
 
     print(f"\n\n>>Product size levels: df['ProductSize'].unique()\n{df['ProductSize'].unique()=}")
 
-    sizes = 'Large','Large / Medium','Medium','Small','Mini','Compact'
     print(f"\n>>Set ordered categories for ProductSize: sizes = \n{sizes}")
 
     #Set ProductSize ordered cats
@@ -37,7 +39,6 @@ else:
 
     #Normalize the SalePrice, the target label, to a log value, since it is a monetary value
 
-    dep_var = 'SalePrice'
     df[dep_var] = np.log(df[dep_var])
 
     print(f"\n\n>>Normalized/log the target label: df[dep_var] = \n{df[dep_var]}")
@@ -62,7 +63,6 @@ else:
     valid_idx = np.where(~cond)[0]
     print(f"\n\n>>Train data set size: {len(train_idx)}")
     print(f">>Valid data set size: {len(valid_idx)}")
-    splits = (list(train_idx),list(valid_idx))
 
     #Define continuous and categorical variables
     cont, cat = cont_cat_split(df, 1, dep_var=dep_var)
@@ -128,6 +128,75 @@ features_to_keep = feat_imps[feat_imps.importance>0.005].cols
 print(f"\nEliminating low importance features to simplify model...")
 print(f">>Keeping {len(features_to_keep)} out of {len(tab_pandas.items.columns)}")
 
+train_xs_trimmed = train_xs[features_to_keep]
+valid_xs_trimmed = valid_xs[features_to_keep]
+
+#Create a new tree with trimmed cols
+tab_model_trimmed = rf(train_xs_trimmed, train_y)
+print(f"\n\n>>Loss with full model:\nTrain = {m_rmse(rf_model, train_xs, train_y)}\nValidation = {m_rmse(rf_model, valid_xs, valid_y)}")
+print(f"\n>>Loss with trimmed model:\nTrain = {m_rmse(tab_model_trimmed,train_xs_trimmed,train_y)}\nValidation = {m_rmse(tab_model_trimmed,valid_xs_trimmed,valid_y)}")
+
+#Create function that returns oob score
+def get_oob(df):
+    mod = RandomForestRegressor(n_estimators=40, min_samples_leaf=15,
+                max_samples=50000, max_features=0.5, n_jobs=-1, oob_score=True)
+    mod.fit(df, train_y)
+    return mod.oob_score_
+
+print(f"\n\n>>OOB score for trimmed model: {get_oob(train_xs_trimmed):.4f}")
+print(f"OOB score after dropping specific columns:")
+oob_scores_cols = {c:get_oob(train_xs_trimmed.drop(c, axis=1)) for c in (
+    'saleYear', 'saleElapsed', 'ProductGroupDesc','ProductGroup',
+    'fiModelDesc', 'fiBaseModel',
+    'Hydraulics_Flow','Grouser_Tracks', 'Coupler_System')}
+print("\n".join([f"{key}: {value:.4f}" for key, value in oob_scores_cols.items()]))
+
+mult_cols_to_drop = ['saleYear', 'ProductGroupDesc', 'fiBaseModel', 'Grouser_Tracks']
+
+print(f"\nOOB score after dropping multiple cols: {mult_cols_to_drop}")
+print(f"{get_oob(train_xs_trimmed.drop(mult_cols_to_drop, axis=1))}")
+
+#Create new train and valid data sets after dropping selected columns
+train_xs_final = train_xs_trimmed.drop(mult_cols_to_drop,axis=1)
+valid_xs_final = valid_xs_trimmed.drop(mult_cols_to_drop,axis=1)
+
+print(f"\n\nSaving final training and validation data frames...")
+save_pickle("./train_xs_final.pkl",train_xs_final)
+save_pickle("./valid_xs_final.pkl",valid_xs_final)
 
 
+#Check accuracy/loss on final data sets
+final_model = rf(train_xs_final, train_y)
+print(f"\n\n>>Final training loss: {m_rmse(final_model, train_xs_final, train_y)}")
+print(f">>Final validation loss: {m_rmse(final_model, valid_xs_final, valid_y)}")
 
+
+### Compare with a neural net model
+
+df_nn = pd.read_csv('./data/TrainAndValid.csv', low_memory=False)
+df_nn['ProductSize'] = df_nn['ProductSize'].astype('category')
+df_nn['ProductSize'] = df_nn['ProductSize'].cat.set_categories(sizes, ordered=True)
+df_nn[dep_var] = np.log(df_nn[dep_var])
+df_nn = add_datepart(df_nn, 'saledate')
+
+df_nn_final = df_nn[list(train_xs_final.columns) + [dep_var]]
+
+cont_nn, cat_nn = cont_cat_split(df_nn_final, max_card=9000, dep_var=dep_var)
+
+#Duplicate info
+cat_nn.remove('fiModelDescriptor')
+
+print(f"{df_nn_final[cat_nn].nunique()}")
+
+procs_nn = [Categorify, FillMissing, Normalize]
+tab_pandas_nn = TabularPandas(df_nn_final, procs_nn, cat_nn, cont_nn, splits=splits, y_names=dep_var)
+
+dls = tab_pandas_nn.dataloaders(1024)
+
+learn = tabular_learner(dls, y_range=(8,12), layers=[500,250], n_out=1, loss_func=F.mse_loss)
+
+print(f"\n\nLR finder:\n{learn.lr_find()}")
+learn.fit_one_cycle(5, 1e-2)
+
+preds,targs = learn.get_preds()
+print(f"\nLOSS: {r_mse(preds,targs)}")
